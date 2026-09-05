@@ -3097,6 +3097,21 @@
                 : [];
         },
 
+        replaceProfilesFromHouse: function (profiles, activeProfileId) {
+            if (!Array.isArray(profiles)) return Promise.resolve(false);
+            if (!metaCache || metaHydrateFailedWithPlaceholder) {
+                return Promise.reject(new Error('profile_store_not_ready'));
+            }
+            var next = profiles.map(normalizeProfile);
+            if (!next.length) next = [defaultProfile('我')];
+            var requested = String(activeProfileId || '').trim();
+            metaCache.profiles = next;
+            metaCache.activeProfileId = next.some(function (p) { return p.id === requested; })
+                ? requested
+                : next[0].id;
+            return saveMeta().then(function () { return true; });
+        },
+
         hasContactDisplayAvatarOverride: function (contact) {
             return displayAvatarHasData(getContactDisplayAvatarRecord(contact));
         },
