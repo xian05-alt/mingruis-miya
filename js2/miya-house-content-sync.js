@@ -4,6 +4,7 @@
 
   var SOURCE = 'miya';
   var STATE_KEY = 'miya-house-content-bridge-v1';
+  var HOUSE_HOST = 'web-production-204b5.up.railway.app';
   var running = false;
 
   function toast(message) {
@@ -21,7 +22,34 @@
 
   function saveState(state) {
     localStorage.setItem(STATE_KEY, JSON.stringify(state));
+    refreshSettingsUi();
     return state;
+  }
+
+  function pairingState(value) {
+    var text = String(value || '').trim();
+    if (!text) throw new Error('请粘贴爸爸发来的 Miya 配对链接');
+    var url;
+    try { url = new URL(text, location.href); }
+    catch (e) { throw new Error('配对链接格式不对'); }
+    var params = new URLSearchParams(url.hash.replace(/^#/, ''));
+    if (params.get('house-content-source') !== SOURCE) throw new Error('这不是 Miya 的配对链接');
+    var token = params.get('house-content-token') || '';
+    var houseUrl = params.get('house-content-url') || '';
+    var house;
+    try { house = new URL(houseUrl); }
+    catch (e) { throw new Error('配对链接里的 House 地址无效'); }
+    if (!token || house.protocol !== 'https:' || house.host !== HOUSE_HOST) {
+      throw new Error('配对链接无效或不属于这个 House');
+    }
+    return { token: token, houseUrl: house.origin, revision: 0, fingerprint: '' };
+  }
+
+  async function pair(value) {
+    saveState(pairingState(value));
+    var ok = await sync({ silent: false });
+    refreshSettingsUi();
+    return ok;
   }
 
   function hash(value) {
@@ -178,31 +206,117 @@
       return false;
     } finally {
       running = false;
+      refreshSettingsUi();
     }
   }
 
   function acceptPairingLink() {
-    var params = new URLSearchParams(location.hash.replace(/^#/, ''));
-    if (params.get('house-content-source') !== SOURCE) return false;
-    var token = params.get('house-content-token') || '';
-    var houseUrl = params.get('house-content-url') || '';
-    if (!token || !/^https:\/\//.test(houseUrl)) return false;
-    saveState({ token: token, houseUrl: houseUrl.replace(/\/$/, ''), revision: 0, fingerprint: '' });
+    if (location.hash.indexOf('house-content-source=') < 0) return false;
+    try { saveState(pairingState(location.href)); }
+    catch (error) { toast(error.message || String(error)); return false; }
     history.replaceState(null, '', location.pathname + location.search);
     setTimeout(function () { sync({ silent: false }); }, 1200);
     return true;
   }
 
+  function statusText() {
+    var state = loadState();
+    if (!state.token) return '未连接';
+    if (!state.lastSyncedAt) return '已配对 · 等待首次同步';
+    return '已连接 · ' + new Date(state.lastSyncedAt).toLocaleString('zh-CN', {
+      month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+  }
+
+  function refreshSettingsUi() {
+    var status = statusText();
+    document.querySelectorAll('[data-miya-house-sync-status]').forEach(function (el) {
+      el.textContent = status;
+    });
+    var paired = !!loadState().token;
+    document.querySelectorAll('[data-miya-house-sync-action="sync"], [data-miya-house-sync-action="disconnect"]').forEach(function (el) {
+      el.disabled = !paired || running;
+    });
+  }
+
+  function injectSettingsEntry() {
+    var app = document.getElementById('miya-settings-app');
+    if (!app || app.querySelector('[data-miya-house-sync-row]')) return;
+    var interfaceList = app.querySelector('#miya-st-main .st-feature-card .st-inner-card');
+    var drawer = app.querySelector('.ins-vault-drawer');
+    if (!interfaceList || !drawer) return;
+
+    var row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'st-card-row';
+    row.setAttribute('data-miya-house-sync-row', '');
+    row.innerHTML =
+      '<div class="st-card-row-left"><div class="st-card-icon st-card-icon--green">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg></div>' +
+        '<div><div class="st-card-label">House 同步</div><div class="st-card-desc" data-miya-house-sync-status></div></div></div>' +
+      '<svg class="st-chevron" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>';
+    interfaceList.appendChild(row);
+
+    var panel = document.createElement('div');
+    panel.className = 'ins-vault-panel';
+    panel.id = 'miya-st-panel-house-sync';
+    panel.setAttribute('data-panel-title', 'House 同步');
+    panel.innerHTML =
+      '<div class="st-form">' +
+        '<section class="st-form-section"><h4 class="st-form-section__title">连接 House</h4>' +
+          '<div class="st-form-card ins-form-block">' +
+            '<label class="ins-field-label" for="miya-house-pairing-link">配对链接</label>' +
+            '<textarea class="ins-text-input" id="miya-house-pairing-link" rows="5" autocomplete="off" spellcheck="false" placeholder="把爸爸发来的 Miya 配对链接粘贴到这里"></textarea>' +
+            '<p class="st-card-desc">只需粘贴一次；密钥不会显示在状态里。</p>' +
+            '<button type="button" class="st-action-btn st-action-btn--primary" data-miya-house-sync-action="pair">连接并同步</button>' +
+          '</div></section>' +
+        '<section class="st-form-section"><h4 class="st-form-section__title">同步状态</h4>' +
+          '<div class="st-form-card ins-form-block">' +
+            '<div class="st-card-label" data-miya-house-sync-status></div>' +
+            '<div class="st-btn-row">' +
+              '<button type="button" class="st-action-btn st-action-btn--primary" data-miya-house-sync-action="sync">立即同步</button>' +
+              '<button type="button" class="st-action-btn" data-miya-house-sync-action="disconnect">断开连接</button>' +
+            '</div>' +
+          '</div></section>' +
+      '</div>';
+    drawer.appendChild(panel);
+
+    row.addEventListener('click', function () {
+      if (global.miyaSettingsApp && typeof global.miyaSettingsApp.open === 'function') {
+        global.miyaSettingsApp.open(panel.id);
+        refreshSettingsUi();
+      } else toast('设置模块还没有载入，请稍后再试');
+    });
+    panel.querySelector('[data-miya-house-sync-action="pair"]').addEventListener('click', async function () {
+      var input = panel.querySelector('#miya-house-pairing-link');
+      try { await pair(input.value); input.value = ''; }
+      catch (error) { toast(error.message || String(error)); }
+    });
+    panel.querySelector('[data-miya-house-sync-action="sync"]').addEventListener('click', function () {
+      sync({ silent: false });
+    });
+    panel.querySelector('[data-miya-house-sync-action="disconnect"]').addEventListener('click', function () {
+      if (!global.confirm('断开 House 同步？Miya 里的数据不会删除。')) return;
+      localStorage.removeItem(STATE_KEY);
+      refreshSettingsUi();
+      toast('已断开 House，Miya 数据没有删除');
+    });
+    refreshSettingsUi();
+  }
+
   global.miyaHouseContentSync = {
     sync: sync,
+    pair: pair,
     disconnect: function () {
       localStorage.removeItem(STATE_KEY);
+      refreshSettingsUi();
       toast('已断开 House，Miya 数据没有删除');
     },
     state: loadState
   };
 
   function boot() {
+    injectSettingsEntry();
     if (!acceptPairingLink() && loadState().token) {
       setTimeout(function () { sync({ silent: true }); }, 1800);
     }
