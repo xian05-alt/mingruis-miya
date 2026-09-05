@@ -167,3 +167,11 @@
   global.miyaScheduleForeground = scheduleForeground;
   global.miyaBindForeground = bindForeground;
 })(typeof window !== 'undefined' ? window : self);
+
+
+// Load the private House character-card/worldbook bridge.
+(function () {
+  var script = document.createElement('script');
+  script.src = 'js2/miya-house-content-sync.js?v=1';
+  document.head.appendChild(script);
+})();
