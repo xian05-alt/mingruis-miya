@@ -63,19 +63,24 @@
   }
 
   async function storesReady() {
-    if (!global.miyaContactsStore || !global.miyaWorldbookStore) {
-      throw new Error('Miya 角色卡或世界书还没有载入');
+    if (!global.miyaContactsStore || !global.miyaWorldbookStore || !global.miyaChatStore) {
+      throw new Error('Miya 角色卡、用户面具或世界书还没有载入');
     }
     await Promise.all([
       global.miyaContactsStore.whenReady(),
-      global.miyaWorldbookStore.whenReady()
+      global.miyaWorldbookStore.whenReady(),
+      global.miyaChatStore.init()
     ]);
   }
 
   async function readLocal() {
     await storesReady();
+    var characters = global.miyaContactsStore.getState();
+    var activeProfile = global.miyaChatStore.getActiveProfile();
+    characters.userProfiles = global.miyaChatStore.getProfiles();
+    characters.activeUserProfileId = activeProfile ? activeProfile.id : '';
     return {
-      characters: global.miyaContactsStore.getState(),
+      characters: characters,
       worldbooks: global.miyaWorldbookStore.getState()
     };
   }
@@ -88,13 +93,25 @@
     if (typeof global.miyaWriteLsJsonKey !== 'function') {
       throw new Error('Miya 存储还没有准备好');
     }
+    var contacts = {
+      version: snapshot.characters.version,
+      groups: snapshot.characters.groups,
+      characters: snapshot.characters.characters
+    };
     await Promise.all([
-      global.miyaWriteLsJsonKey(global.miyaContactsStore.STORE_KEY, snapshot.characters),
+      global.miyaWriteLsJsonKey(global.miyaContactsStore.STORE_KEY, contacts),
       global.miyaWriteLsJsonKey(global.miyaWorldbookStore.STORE_KEY, snapshot.worldbooks)
     ]);
     global.miyaContactsStore.invalidateCache();
     global.miyaWorldbookStore.invalidateCache();
     await storesReady();
+    if (Array.isArray(snapshot.characters.userProfiles) &&
+        typeof global.miyaChatStore.replaceProfilesFromHouse === 'function') {
+      await global.miyaChatStore.replaceProfilesFromHouse(
+        snapshot.characters.userProfiles,
+        snapshot.characters.activeUserProfileId
+      );
+    }
     global.dispatchEvent(new CustomEvent('miya-house-content-synced'));
   }
 
@@ -117,6 +134,13 @@
     var payload = await response.json().catch(function () { return {}; });
     if (!response.ok) throw new Error(payload.detail || ('House 同步失败（' + response.status + '）'));
     return payload;
+  }
+
+  function withoutUserProfiles(snapshot) {
+    var characters = Object.assign({}, snapshot.characters || {});
+    delete characters.userProfiles;
+    delete characters.activeUserProfileId;
+    return { characters: characters, worldbooks: snapshot.worldbooks };
   }
 
   async function push(state, local, revision) {
@@ -165,6 +189,20 @@
       var remoteLocal = { characters: remote.characters, worldbooks: remote.worldbooks };
       var localHash = hash(local);
       var remoteHash = hash(remoteLocal);
+      var legacyLocalHash = hash(withoutUserProfiles(local));
+      var legacyRemoteHash = hash(withoutUserProfiles(remoteLocal));
+
+      if (state.fingerprint && !state.userProfilesV1 &&
+          remote.revision === state.revision &&
+          !Array.isArray(remote.characters && remote.characters.userProfiles) &&
+          legacyLocalHash === state.fingerprint &&
+          legacyRemoteHash === state.fingerprint) {
+        state.userProfilesV1 = true;
+        var migrated = await push(state, local, remote.revision);
+        if (!migrated) throw new Error('House 又有新修改，请再同步一次');
+        if (!options.silent) toast('Miya 用户面具已连接 House');
+        return true;
+      }
 
       if (!state.fingerprint) {
         if (remote.revision === 0 && isEmpty(remoteLocal)) {
